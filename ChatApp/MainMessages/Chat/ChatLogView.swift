@@ -44,6 +44,9 @@ class ChatLogViewModel: ObservableObject {
                         self.chatMessages.append(.init(data: data, documentId: docId))
                     }
                 })
+                DispatchQueue.main.async {
+                    self.count += 1
+                }
             }
     }
     
@@ -69,6 +72,7 @@ class ChatLogViewModel: ObservableObject {
             }
             print("Successfully saved current user sending message")
             self.chatText = ""
+            self.count += 1
         }
         
         let recipientMessageDocument = FirebaseManager.shared.firestore
@@ -84,6 +88,8 @@ class ChatLogViewModel: ObservableObject {
             print("Successfully saved recipient user recieve message")
         }
     }
+    
+    @Published var count = 0
 }
 
 struct ChatLogView: View {
@@ -105,42 +111,35 @@ struct ChatLogView: View {
         }
         .navigationTitle(chatUser?.email ?? "")
         .navigationBarTitleDisplayMode(.inline)
+//        .toolbar {
+//            ToolbarItem(placement: .navigationBarTrailing) {
+//                Button {
+//                    vm.count += 1
+//                } label: {
+//                    Text("Count: \(vm.count)")
+//                }
+//            }
+//        }
     }
+    
+    static let emptyScrollToString = "Empty"
     
     private var messagesView: some View {
         ScrollView {
-            ForEach(vm.chatMessages) { message in
+            ScrollViewReader { proxy in
                 VStack {
-                    if message.fromId == FirebaseManager.shared.auth.currentUser?.uid {
-                        HStack {
-                            Spacer()
-                            HStack {
-                                Text(message.text)
-                                    .foregroundColor(.white)
-                            }
-                            .padding()
-                            .background(.blue)
-                            .cornerRadius(8)
-                        }
-                    } else {
-                        HStack {
-                            HStack {
-                                Text(message.text)
-                                    .foregroundColor(.black)
-                            }
-                            .padding()
-                            .background(.white)
-                            .cornerRadius(8)
-                            Spacer()
-                        }
-                        
+                    ForEach(vm.chatMessages) { message in
+                        MessageView(message: message)
+                    }
+                    HStack { Spacer() }
+                        .id(Self.emptyScrollToString)
+                }
+                .onReceive(vm.$count) { _ in
+                    withAnimation(.easeOut(duration: 0.5)) {
+                        proxy.scrollTo(Self.emptyScrollToString, anchor: .bottom)
                     }
                 }
-                .padding(.horizontal)
-                .padding(.top, 8)
             }
-            
-            HStack { Spacer() }
         }
         .background(Color(.init(white: 0.95, alpha: 1)))
         .padding(.top, 1)
@@ -172,10 +171,47 @@ struct ChatLogView: View {
     }
 }
 
+struct MessageView: View {
+    
+    let message: ChatMessage
+    
+    var body: some View {
+        VStack {
+            if message.fromId == FirebaseManager.shared.auth.currentUser?.uid {
+                HStack {
+                    Spacer()
+                    HStack {
+                        Text(message.text)
+                            .foregroundColor(.white)
+                    }
+                    .padding()
+                    .background(.blue)
+                    .cornerRadius(8)
+                }
+            } else {
+                HStack {
+                    HStack {
+                        Text(message.text)
+                            .foregroundColor(.black)
+                    }
+                    .padding()
+                    .background(.white)
+                    .cornerRadius(8)
+                    Spacer()
+                }
+                
+            }
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+}
+
 struct ChatLogView_Previews: PreviewProvider {
     static var previews: some View {
-        NavigationView {
-            ChatLogView(chatUser: .init(userData: ["uid":"aXEx8qpIt1RMO0yXcsx2LMgzKWm","email":"test4@gmail.com"]))
-        }
+//        NavigationView {
+//            ChatLogView(chatUser: .init(userData: ["uid":"aXEx8qpIt1RMO0yXcsx2LMgzKWm","email":"test4@gmail.com"]))
+//        }
+        MainMessagesView()
     }
 }
