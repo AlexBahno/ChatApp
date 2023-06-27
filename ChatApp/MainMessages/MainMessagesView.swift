@@ -7,6 +7,8 @@
 
 import SwiftUI
 import SDWebImageSwiftUI
+import Firebase
+import FirebaseFirestoreSwift
 
 
 class MainMessagesViewModel: ObservableObject {
@@ -14,15 +16,54 @@ class MainMessagesViewModel: ObservableObject {
     @Published var errorMessage = ""
     @Published var chatUser: ChatUser?
     @Published var isUserCurrentlyLoggedOut = false
+    @Published var recentMessages = [RecentMessage]()
+    private var firestoreListener: ListenerRegistration?
 
     init() {
+        DispatchQueue.main.async {
+            self.isUserCurrentlyLoggedOut =
+                            FirebaseManager.shared.auth.currentUser?.uid == nil
+        }
         Task.init {
             try await fetchCurrentUser()
         }
-        self.isUserCurrentlyLoggedOut =
-                        FirebaseManager.shared.auth.currentUser?.uid == nil
+        fetchRecentMessages()
     }
     
+    func fetchRecentMessages() {
+        guard let uid = FirebaseManager.shared.auth.currentUser?.uid else {return}
+        
+        firestoreListener?.remove()
+        self.recentMessages.removeAll()
+        
+        firestoreListener = FirebaseManager.shared.firestore
+            .collection("recent_messages")
+            .document(uid)
+            .collection("messages")
+            .order(by: FirebaseConstants.timestamp)
+            .addSnapshotListener { querySnapshot, error in
+                if let error = error {
+                    self.errorMessage = "Failed to fetch recent messages: \(error.localizedDescription)"
+                    return
+                }
+                querySnapshot?.documentChanges.forEach({ change in
+                    let docId = change.document.documentID
+                    
+                    if let index = self.recentMessages.firstIndex(where: { rm in
+                        return rm.id == docId
+                    }) {
+                        self.recentMessages.remove(at: index)
+                    }
+                    
+                    do {
+                        let rm = try change.document.data(as: RecentMessage.self)
+                        self.recentMessages.insert(rm, at: 0)
+                    } catch {
+                        print(error)
+                    }
+                })
+            }
+    }
     
     func fetchCurrentUser() async throws {
         guard let uid = FirebaseManager.shared.auth.currentUser?.uid else {
@@ -36,11 +77,12 @@ class MainMessagesViewModel: ObservableObject {
                 .document(uid)
                 .getDocument()
             
-            guard let userData = snapshot.data() else {
-                self.errorMessage = "Cannot convert data from db"
-                return
+            guard let userData = snapshot.data() else { return }
+            
+            DispatchQueue.main.async {
+                self.chatUser = .init(userData: userData)
+                FirebaseManager.shared.currentUser = self.chatUser
             }
-            self.chatUser = .init(userData: userData)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -60,6 +102,8 @@ struct MainMessagesView: View {
     
     @ObservedObject private var vm = MainMessagesViewModel()
     
+    private var chatLogViewModel = ChatLogViewModel(chatUser: nil)
+    
     var body: some View {
         NavigationView {
             VStack {
@@ -67,7 +111,7 @@ struct MainMessagesView: View {
                 messageView
                 
                 NavigationLink("", isActive: $shouldNavigateToChatLogView) {
-                    ChatLogView(chatUser: self.chatUser)
+                    ChatLogView(vm: chatLogViewModel)
                 }
 
             }
@@ -134,6 +178,7 @@ struct MainMessagesView: View {
         .fullScreenCover(isPresented: $vm.isUserCurrentlyLoggedOut) {
             LoginView(didCompleteLoginProcess: {
                 self.vm.isUserCurrentlyLoggedOut = false
+                self.vm.fetchRecentMessages()
                 Task.init {
                     try await self.vm.fetchCurrentUser()
                 }
@@ -144,28 +189,41 @@ struct MainMessagesView: View {
     
     private var messageView: some View {
         ScrollView {
-            ForEach(0..<10, id: \.self) { num in
+            ForEach(vm.recentMessages) { recentMessage in
                 VStack {
                     Button {
+                        let uid = FirebaseManager.shared.auth.currentUser?.uid == recentMessage.fromId ? recentMessage.toId : recentMessage.fromId
+                        self.chatUser = .init(userData: [
+                            FirebaseConstants.email: recentMessage.email,
+                            FirebaseConstants.profileImageUrl: recentMessage.profileImageUrl,
+                            FirebaseConstants.uid: uid
+                        ])
+                        self.chatLogViewModel.chatUser = self.chatUser
+                        self.chatLogViewModel.fetchMessages()
                         shouldNavigateToChatLogView.toggle()
                     } label: {
                         HStack(spacing: 16) {
-                            Image(systemName: "person.fill")
-                                .font(.system(size: 32))
-                                .padding(8)
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 44)
-                                        .stroke(style: StrokeStyle(lineWidth: 1))
-                                }
-                            VStack (alignment: .leading) {
-                                Text("Username")
+                            WebImage(url: URL(string: recentMessage.profileImageUrl))
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 64, height: 64)
+                                .clipped()
+                                .cornerRadius(64)
+                                .overlay(RoundedRectangle(cornerRadius: 64)
+                                    .stroke(Color(.label), style: StrokeStyle(lineWidth: 1)))
+                            
+                            VStack (alignment: .leading, spacing: 8) {
+                                Text(recentMessage.username)
                                     .font(.system(size: 16, weight: .bold))
-                                Text("Mesage sent to user")
+                                    .multilineTextAlignment(.leading)
+                                Text(recentMessage.text)
                                     .font(.system(size: 14))
                                     .foregroundColor(.gray.opacity(0.8))
+                                    .multilineTextAlignment(.leading)
+                                    .lineLimit(2)
                             }
                             Spacer()
-                            Text("22d")
+                            Text(recentMessage.timeAgo)
                                 .font(.system(size: 14, weight: .semibold))
                         }
                     }
@@ -200,6 +258,8 @@ struct MainMessagesView: View {
             CreateNewMessageView(didSelectNewUser: { user in
                 print(user.email)
                 self.chatUser = user
+                self.chatLogViewModel.chatUser = user
+                self.chatLogViewModel.fetchMessages()
                 shouldNavigateToChatLogView.toggle()
             })
         }

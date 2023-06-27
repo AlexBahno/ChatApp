@@ -24,8 +24,10 @@ class CreateNewMessageViewModel: ObservableObject {
             .getDocuments()
         
         snapshot.documents.forEach { snapshot in
-            let userData = snapshot.data()
-            self.users.append(.init(userData: userData))
+            do {
+                let userData = snapshot.data()
+                self.users.append(.init(userData: userData))
+            }
         }
     }
 }

@@ -7,12 +7,15 @@
 
 import SwiftUI
 import Firebase
+import FirebaseFirestoreSwift
+
 
 class ChatLogViewModel: ObservableObject {
     @Published var chatText = ""
     @Published var errorMessage = ""
     @Published var chatMessages = [ChatMessage]()
-    let chatUser: ChatUser?
+    var chatUser: ChatUser?
+    var firestoreListener: ListenerRegistration?
     
     init(chatUser: ChatUser?) {
         self.chatUser = chatUser
@@ -20,11 +23,14 @@ class ChatLogViewModel: ObservableObject {
         fetchMessages()
     }
     
-    private func fetchMessages() {
+    func fetchMessages() {
         guard let fromId = FirebaseManager.shared.auth.currentUser?.uid else {return}
         guard let toId = chatUser?.uid else {return}
         
-        FirebaseManager.shared.firestore
+        firestoreListener?.remove()
+        chatMessages.removeAll()
+        
+        firestoreListener = FirebaseManager.shared.firestore
             .collection("messages")
             .document(fromId)
             .collection(toId)
@@ -32,16 +38,18 @@ class ChatLogViewModel: ObservableObject {
             .addSnapshotListener { snapshot, error in
                 if let error = error {
                     self.errorMessage = "Failed to listen for messages: \(error.localizedDescription)"
-                    
                     print(error.localizedDescription)
                     return
                 }
                 
                 snapshot?.documentChanges.forEach({ change in
                     if change.type == .added {
-                        let data = change.document.data()
-                        let docId = change.document.documentID
-                        self.chatMessages.append(.init(data: data, documentId: docId))
+                        do {
+                            let message = try change.document.data(as: ChatMessage.self)
+                            self.chatMessages.append(message)
+                        } catch {
+                            print(error)
+                        }
                     }
                 })
                 DispatchQueue.main.async {
@@ -51,7 +59,6 @@ class ChatLogViewModel: ObservableObject {
     }
     
     func handleSend() {
-        print(chatText)
         guard let fromId = FirebaseManager.shared.auth.currentUser?.uid else {return}
         guard let toId = chatUser?.uid else {return}
         
@@ -71,6 +78,9 @@ class ChatLogViewModel: ObservableObject {
                 self.errorMessage = "Failed to save message into Firebase: \(error.localizedDescription)"
             }
             print("Successfully saved current user sending message")
+            
+            self.persistRecentMessage()
+            
             self.chatText = ""
             self.count += 1
         }
@@ -89,17 +99,70 @@ class ChatLogViewModel: ObservableObject {
         }
     }
     
+    private func persistRecentMessage() {
+        guard let chatUser = chatUser else {return}
+        guard let uid = FirebaseManager.shared.auth.currentUser?.uid else {return}
+        guard let toId = self.chatUser?.uid else {return}
+        
+        let document = FirebaseManager.shared.firestore
+            .collection("recent_messages")
+            .document(uid)
+            .collection("messages")
+            .document(toId)
+        
+        let data = [
+            FirebaseConstants.timestamp: Timestamp(),
+            FirebaseConstants.text: self.chatText,
+            FirebaseConstants.fromId: uid,
+            FirebaseConstants.toId: toId,
+            FirebaseConstants.profileImageUrl: chatUser.profileImageUrl,
+            FirebaseConstants.email: chatUser.email
+        ] as [String : Any]
+                
+        document.setData(data) { error in
+            if let error = error {
+                self.errorMessage = "Failed to save recent message: \(error.localizedDescription)"
+                print("Failed to save recent message: \(error.localizedDescription)")
+                return
+            }
+        }
+        
+        let recipientDocument = FirebaseManager.shared.firestore
+            .collection("recent_messages")
+            .document(toId)
+            .collection("messages")
+            .document(uid)
+        
+        guard let currentUser = FirebaseManager.shared.currentUser else {return}
+        let recipientDate = [
+            FirebaseConstants.timestamp: Timestamp(),
+            FirebaseConstants.text: self.chatText,
+            FirebaseConstants.fromId: uid,
+            FirebaseConstants.toId: toId,
+            FirebaseConstants.profileImageUrl: currentUser.profileImageUrl,
+            FirebaseConstants.email: currentUser.email
+        ] as [String: Any]
+        
+        recipientDocument.setData(recipientDate) { error in
+            if let error = error {
+                self.errorMessage = "Failed to save recent message: \(error.localizedDescription)"
+                print("Failed to save recent message: \(error.localizedDescription)")
+                return
+            }
+        }
+    }
+    
     @Published var count = 0
 }
 
 struct ChatLogView: View {
     
-    let chatUser: ChatUser?
-    
-    init(chatUser: ChatUser?) {
-        self.chatUser = chatUser
-        self.vm = .init(chatUser: chatUser)
-    }
+//    let chatUser: ChatUser?
+//    
+//    init(chatUser: ChatUser?) {
+//        self.chatUser = chatUser
+//        self.vm = .init(chatUser: chatUser)
+//    }
     
     @ObservedObject var vm: ChatLogViewModel
     
@@ -109,17 +172,11 @@ struct ChatLogView: View {
             chatBottomBar
             Text(vm.errorMessage)
         }
-        .navigationTitle(chatUser?.email ?? "")
+        .navigationTitle(vm.chatUser?.email ?? "")
         .navigationBarTitleDisplayMode(.inline)
-//        .toolbar {
-//            ToolbarItem(placement: .navigationBarTrailing) {
-//                Button {
-//                    vm.count += 1
-//                } label: {
-//                    Text("Count: \(vm.count)")
-//                }
-//            }
-//        }
+        .onDisappear {
+            vm.firestoreListener?.remove()
+        }
     }
     
     static let emptyScrollToString = "Empty"
